@@ -164,6 +164,10 @@
     if (video) {
       watch(video);
       applyPlaybackPreferences(video);
+      if (bridgeConnected) {
+        if (canAdvance() && video.paused && !video.ended) video.play().catch(() => undefined);
+        else if (!canAdvance() && !video.paused) video.pause();
+      }
       if (canAdvance() && Date.now() - reelStartedAt >= Number(settings.intervalSeconds) * 1000) {
         requestAdvance(1, 'Interval elapsed');
       }

@@ -22,7 +22,7 @@ VS Code extension                       Chrome / Edge extension
 
 ### 1. Visual Studio Code
 
-1. Descarga `doomscroll-vscode-2.1.0.vsix` desde Releases o créalo con `npm run package`.
+1. Descarga `doomscroll-vscode-2.1.1.vsix` desde Releases o créalo con `npm run package`.
 2. En VS Code abre **Extensions → ⋯ → Install from VSIX…**.
 3. Reinicia VS Code y abre DoomScroll desde la Activity Bar.
 
