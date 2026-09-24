@@ -1,0 +1,11 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { width: 280px; margin: 0; padding: 14px; color: #eee; background: #171717; font: 13px system-ui, sans-serif; }
+header { display: flex; justify-content: space-between; font-size: 16px; }
+#dot { color: #d79831; } #dot.connected { color: #55c474; }
+p { color: #bbb; }
+button { width: 100%; margin: 4px 0; padding: 9px; color: #eee; background: #333; border: 0; border-radius: 5px; cursor: pointer; }
+button:hover { background: #444; }
+.primary { background: #2686b5; font-weight: 600; }
+.controls { display: grid; grid-template-columns: 70px 1fr; gap: 6px; }
+small { display: block; margin-top: 9px; color: #999; line-height: 1.4; }

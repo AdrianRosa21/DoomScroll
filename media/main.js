@@ -1,67 +1,70 @@
 const vscode = acquireVsCodeApi();
+const $ = id => document.getElementById(id);
 const elements = {
-  play: document.getElementById('play'), interval: document.getElementById('interval'),
-  smart: document.getElementById('smart'), mute: document.getElementById('mute'),
-  openReels: document.getElementById('openReels'), onlyCoding: document.getElementById('onlyCoding'),
-  volume: document.getElementById('volume'), volumeValue: document.getElementById('volumeValue'),
-  opacity: document.getElementById('opacity'), content: document.getElementById('content'),
-  status: document.getElementById('status'), dot: document.getElementById('dot'),
-  addForm: document.getElementById('addForm'), reelUrl: document.getElementById('reelUrl'),
-  reelFrame: document.getElementById('reelFrame'), empty: document.getElementById('empty'),
-  reelNav: document.getElementById('reelNav'), previous: document.getElementById('previous'),
-  next: document.getElementById('next'), remove: document.getElementById('remove'), counter: document.getElementById('counter')
+  connection: $('connection'), content: $('content'), headline: $('headline'), detail: $('detail'),
+  reelIcon: $('reelIcon'), openReels: $('openReels'), openConnector: $('openConnector'),
+  previous: $('previous'), play: $('play'), next: $('next'), mute: $('mute'), pip: $('pip'),
+  interval: $('interval'), smart: $('smart'), onlyCoding: $('onlyCoding'), volume: $('volume'),
+  volumeValue: $('volumeValue'), opacity: $('opacity'), setup: $('setup'), error: $('error'),
+  dot: $('dot'), status: $('status'), activity: $('activity')
 };
 let state;
-let loadedUrl = '';
-let reelStartedAt = Date.now();
 
 const update = (key, value) => vscode.postMessage({ type: 'updateSetting', key, value });
+const command = (name, value) => vscode.postMessage({ type: 'command', name, value });
 elements.openReels.addEventListener('click', () => vscode.postMessage({ type: 'openReels' }));
-elements.addForm.addEventListener('submit', event => { event.preventDefault(); vscode.postMessage({ type: 'addReel', url: elements.reelUrl.value }); elements.reelUrl.value = ''; });
-elements.previous.addEventListener('click', () => selectRelative(-1));
-elements.next.addEventListener('click', () => selectRelative(1));
-elements.remove.addEventListener('click', () => vscode.postMessage({ type: 'removeReel' }));
-elements.play.addEventListener('click', () => update('autoScrollEnabled', !state.autoScrollEnabled));
-elements.smart.addEventListener('click', () => update('smartModeEnabled', !state.smartModeEnabled));
-elements.mute.addEventListener('click', () => update('muted', !state.muted));
+elements.openConnector.addEventListener('click', () => vscode.postMessage({ type: 'openConnectorFolder' }));
+elements.previous.addEventListener('click', () => command('PREVIOUS'));
+elements.next.addEventListener('click', () => command('NEXT'));
+elements.pip.addEventListener('click', () => command('PICTURE_IN_PICTURE'));
+elements.play.addEventListener('click', () => update('autoScrollEnabled', !state?.autoScrollEnabled));
+elements.mute.addEventListener('click', () => update('muted', !state?.muted));
 elements.interval.addEventListener('change', event => update('intervalSeconds', Number(event.target.value)));
+elements.smart.addEventListener('change', event => update('smartModeEnabled', event.target.checked));
 elements.onlyCoding.addEventListener('change', event => update('onlyWhileCoding', event.target.checked));
-elements.volume.addEventListener('input', event => { elements.volumeValue.value = event.target.value + '%'; });
+elements.volume.addEventListener('input', event => { elements.volumeValue.value = `${event.target.value}%`; });
 elements.volume.addEventListener('change', event => update('volume', Number(event.target.value)));
 elements.opacity.addEventListener('change', event => update('opacity', Number(event.target.value)));
-
-function selectRelative(delta) {
-  if (!state?.reels?.length) return;
-  const index = (state.currentIndex + delta + state.reels.length) % state.reels.length;
-  vscode.postMessage({ type: 'selectReel', index });
-}
-
-setInterval(() => {
-  if (!state?.reels?.length || state.status.startsWith('PAUSED')) return;
-  if (Date.now() - reelStartedAt >= state.intervalSeconds * 1000) selectRelative(1);
-}, 500);
 
 window.addEventListener('message', event => {
   if (event.data?.type !== 'state') return;
   state = event.data.value;
+  const browser = state.browser;
+  elements.connection.textContent = state.connected ? 'Navegador conectado' : 'Sin navegador';
+  elements.connection.className = `badge ${state.connected ? 'connected' : ''}`;
   elements.play.textContent = state.autoScrollEnabled ? '⏸' : '▶';
-  elements.interval.value = String(state.intervalSeconds);
-  elements.smart.classList.toggle('active', state.smartModeEnabled);
   elements.mute.textContent = state.muted ? '🔇' : '🔊';
+  elements.smart.checked = state.smartModeEnabled;
   elements.onlyCoding.checked = state.onlyWhileCoding;
+  elements.interval.value = String(state.intervalSeconds);
   elements.volume.value = String(state.volume);
-  elements.volumeValue.value = state.volume + '%';
+  elements.volumeValue.value = `${state.volume}%`;
   elements.opacity.value = String(state.opacity);
   elements.content.style.opacity = String(state.opacity);
+  elements.setup.hidden = state.connected;
   elements.status.textContent = state.status;
-  elements.dot.className = state.status.startsWith('PAUSED') ? 'paused' : 'active';
-  const hasReels = state.reels.length > 0;
-  elements.empty.hidden = hasReels;
-  elements.reelFrame.hidden = !hasReels;
-  elements.reelNav.hidden = !hasReels;
-  if (hasReels) {
-    const url = state.reels[state.currentIndex];
-    if (url !== loadedUrl) { loadedUrl = url; elements.reelFrame.src = url; reelStartedAt = Date.now(); }
-    elements.counter.textContent = `${state.currentIndex + 1} / ${state.reels.length}`;
-  } else if (loadedUrl) { loadedUrl = ''; elements.reelFrame.removeAttribute('src'); }
+  elements.activity.textContent = state.onlyWhileCoding ? ` · ${state.secondsSinceCoding}s` : '';
+  elements.dot.className = state.connected && state.autoScrollEnabled && state.codingActive ? 'active' : 'paused';
+  elements.error.hidden = !(state.serverError || browser.error);
+  elements.error.textContent = state.serverError || browser.error || '';
+  document.querySelectorAll('.transport button').forEach(button => { button.disabled = !state.connected; });
+
+  if (!state.connected) {
+    elements.headline.textContent = 'Conecta Chrome o Edge';
+    elements.detail.textContent = 'Carga el conector local una vez. DoomScroll nunca recibe tu contraseña ni tus cookies.';
+    elements.reelIcon.textContent = '↔';
+  } else if (!browser.pageReady) {
+    elements.headline.textContent = 'Abre Instagram Reels';
+    elements.detail.textContent = 'El conector está listo, pero no encuentra una pestaña de Reels abierta.';
+    elements.reelIcon.textContent = '◎';
+  } else if (!browser.hasVideo) {
+    elements.headline.textContent = 'Buscando el Reel';
+    elements.detail.textContent = browser.status || 'Instagram está cargando el video activo.';
+    elements.reelIcon.textContent = '…';
+  } else {
+    elements.headline.textContent = browser.playing ? 'Reel reproduciéndose' : 'Reel en pausa';
+    const duration = browser.duration > 0 ? ` · ${Math.round(browser.currentTime)}s / ${Math.round(browser.duration)}s` : '';
+    elements.detail.textContent = `${state.status}${duration}`;
+    elements.reelIcon.textContent = browser.playing ? '▶' : 'Ⅱ';
+  }
 });

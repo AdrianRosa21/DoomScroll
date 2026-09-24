@@ -1,13 +1,17 @@
 import * as vscode from 'vscode';
+import WebSocket, { WebSocketServer } from 'ws';
 
 const REELS_URL = vscode.Uri.parse('https://www.instagram.com/reels/');
 const VIEW_ID = 'doomScroll.reelsView';
+const PORT = 8765;
+const PROTOCOL_VERSION = 1;
+const MAX_MESSAGE_BYTES = 32 * 1024;
 const CONFIG_KEYS = new Set([
   'autoScrollEnabled', 'intervalSeconds', 'smartModeEnabled', 'onlyWhileCoding',
-  'inactivityTimeoutSeconds', 'volume', 'muted', 'phoneMode', 'opacity'
+  'inactivityTimeoutSeconds', 'volume', 'muted', 'opacity'
 ]);
 
-interface DoomScrollState {
+interface ControllerSettings {
   autoScrollEnabled: boolean;
   intervalSeconds: number;
   smartModeEnabled: boolean;
@@ -15,12 +19,30 @@ interface DoomScrollState {
   inactivityTimeoutSeconds: number;
   volume: number;
   muted: boolean;
-  phoneMode: boolean;
   opacity: number;
-  status: 'AUTO' | 'SMART' | 'PAUSED BY USER' | 'PAUSED - NOT CODING';
+}
+
+interface BrowserState {
+  pageReady: boolean;
+  pageUrl?: string;
+  hasVideo: boolean;
+  playing: boolean;
+  currentTime: number;
+  duration: number;
+  muted: boolean;
+  volume: number;
+  status?: string;
+  error?: string;
+}
+
+interface UiState extends ControllerSettings {
+  connected: boolean;
+  serverReady: boolean;
+  serverError?: string;
+  codingActive: boolean;
   secondsSinceCoding: number;
-  reels: string[];
-  currentIndex: number;
+  status: string;
+  browser: BrowserState;
 }
 
 class CodingActivityTracker implements vscode.Disposable {
@@ -49,24 +71,167 @@ class CodingActivityTracker implements vscode.Disposable {
   }
 }
 
+class BrowserBridge implements vscode.Disposable {
+  private server?: WebSocketServer;
+  private client?: WebSocket;
+  private serverReady = false;
+  private serverError?: string;
+  private browser: BrowserState = {
+    pageReady: false,
+    hasVideo: false,
+    playing: false,
+    currentTime: 0,
+    duration: 0,
+    muted: false,
+    volume: 0
+  };
+  private readonly emitter = new vscode.EventEmitter<void>();
+  readonly onDidChange = this.emitter.event;
+
+  constructor(
+    private readonly getSettings: () => ControllerSettings,
+    private readonly getCodingState: () => { active: boolean; secondsSinceActivity: number }
+  ) {
+    this.start();
+  }
+
+  private start(): void {
+    try {
+      const server = new WebSocketServer({ host: '127.0.0.1', port: PORT, maxPayload: MAX_MESSAGE_BYTES });
+      this.server = server;
+      server.on('listening', () => {
+        this.serverReady = true;
+        this.serverError = undefined;
+        this.emitter.fire();
+      });
+      server.on('connection', socket => this.accept(socket));
+      server.on('error', error => {
+        this.serverReady = false;
+        this.serverError = error.message;
+        this.emitter.fire();
+      });
+    } catch (error) {
+      this.serverError = error instanceof Error ? error.message : String(error);
+      this.emitter.fire();
+    }
+  }
+
+  private accept(socket: WebSocket): void {
+    if (this.client && this.client.readyState === WebSocket.OPEN) {
+      this.client.close(1000, 'Replaced by a newer DoomScroll connector');
+    }
+    this.client = socket;
+    this.browser.error = undefined;
+    socket.on('message', data => this.receive(data.toString()));
+    socket.on('close', () => {
+      if (this.client === socket) {
+        this.client = undefined;
+        this.browser = { ...this.browser, pageReady: false, hasVideo: false, playing: false, status: 'Connector disconnected' };
+        this.emitter.fire();
+      }
+    });
+    socket.on('error', () => undefined);
+    this.send({ type: 'WELCOME', protocolVersion: PROTOCOL_VERSION });
+    this.syncAll();
+    this.emitter.fire();
+  }
+
+  private receive(raw: string): void {
+    if (Buffer.byteLength(raw, 'utf8') > MAX_MESSAGE_BYTES) {
+      this.client?.close(1009, 'Message too large');
+      return;
+    }
+    let message: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { return; }
+      message = parsed as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (message.type === 'PING') {
+      this.send({ type: 'PONG', at: Date.now() });
+      return;
+    }
+    if (message.type === 'HELLO') {
+      this.syncAll();
+      return;
+    }
+    if (message.type === 'PAGE_STATE' || message.type === 'REEL_STATE' || message.type === 'ERROR') {
+      this.browser = {
+        pageReady: booleanValue(message.pageReady, this.browser.pageReady),
+        pageUrl: stringValue(message.pageUrl, this.browser.pageUrl),
+        hasVideo: booleanValue(message.hasVideo, this.browser.hasVideo),
+        playing: booleanValue(message.playing, this.browser.playing),
+        currentTime: numberValue(message.currentTime, this.browser.currentTime),
+        duration: numberValue(message.duration, this.browser.duration),
+        muted: booleanValue(message.muted, this.browser.muted),
+        volume: numberValue(message.volume, this.browser.volume),
+        status: stringValue(message.status, this.browser.status),
+        error: message.type === 'ERROR' ? stringValue(message.message, 'Browser connector error') : undefined
+      };
+      this.emitter.fire();
+    }
+  }
+
+  getState(): { connected: boolean; serverReady: boolean; serverError?: string; browser: BrowserState } {
+    return {
+      connected: this.client?.readyState === WebSocket.OPEN,
+      serverReady: this.serverReady,
+      serverError: this.serverError,
+      browser: { ...this.browser }
+    };
+  }
+
+  syncAll(): void {
+    this.send({ type: 'SETTINGS', value: this.getSettings() });
+    this.syncCodingState();
+  }
+
+  syncCodingState(): void {
+    this.send({ type: 'CODING_STATE', value: this.getCodingState() });
+  }
+
+  command(name: string, value?: unknown): void {
+    this.send({ type: 'COMMAND', name, value });
+  }
+
+  private send(message: Record<string, unknown>): void {
+    if (this.client?.readyState === WebSocket.OPEN) {
+      this.client.send(JSON.stringify(message));
+    }
+  }
+
+  dispose(): void {
+    this.client?.close(1001, 'VS Code extension stopped');
+    this.server?.close();
+    this.emitter.dispose();
+  }
+}
+
 class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly timer: NodeJS.Timeout;
+  private lastCodingActive?: boolean;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly tracker: CodingActivityTracker
+    private readonly tracker: CodingActivityTracker,
+    private readonly bridge: BrowserBridge,
+    private readonly onStateChanged: (state: UiState) => void
   ) {
     this.disposables.push(
-      tracker.onDidActivity(() => this.postState()),
+      tracker.onDidActivity(() => this.refresh(true)),
+      bridge.onDidChange(() => this.refresh()),
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration('doomScroll')) {
-          this.postState();
+          this.bridge.syncAll();
+          this.refresh();
         }
       })
     );
-    this.timer = setInterval(() => this.postState(), 1000);
+    this.timer = setInterval(() => this.refresh(), 1000);
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -80,7 +245,7 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
       view.webview.onDidReceiveMessage(message => this.handleMessage(message)),
       view.onDidDispose(() => { if (this.view === view) { this.view = undefined; } })
     );
-    this.postState();
+    this.refresh(true);
   }
 
   private async handleMessage(message: unknown): Promise<void> {
@@ -90,33 +255,12 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
       await vscode.env.openExternal(REELS_URL);
       return;
     }
-    if (data.type === 'addReel' && typeof data.url === 'string') {
-      const embed = this.toEmbedUrl(data.url);
-      if (!embed) {
-        void vscode.window.showWarningMessage('Pega un enlace válido de Instagram: instagram.com/reel/ID');
-        return;
-      }
-      const reels = this.context.globalState.get<string[]>('reels', []);
-      const next = reels.includes(embed) ? reels : [...reels, embed].slice(-30);
-      await this.context.globalState.update('reels', next);
-      await this.context.globalState.update('currentIndex', next.indexOf(embed));
-      this.postState();
+    if (data.type === 'openConnectorFolder') {
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.joinPath(this.context.extensionUri, 'browser-extension'));
       return;
     }
-    if (data.type === 'selectReel' && typeof data.index === 'number') {
-      const reels = this.context.globalState.get<string[]>('reels', []);
-      const index = Math.max(0, Math.min(reels.length - 1, Math.trunc(data.index)));
-      await this.context.globalState.update('currentIndex', index);
-      this.postState();
-      return;
-    }
-    if (data.type === 'removeReel') {
-      const reels = this.context.globalState.get<string[]>('reels', []);
-      const index = this.context.globalState.get<number>('currentIndex', 0);
-      if (reels.length > 0) { reels.splice(Math.max(0, Math.min(index, reels.length - 1)), 1); }
-      await this.context.globalState.update('reels', reels);
-      await this.context.globalState.update('currentIndex', Math.max(0, Math.min(index, reels.length - 1)));
-      this.postState();
+    if (data.type === 'command' && typeof data.name === 'string') {
+      this.bridge.command(data.name, data.value);
       return;
     }
     if (data.type === 'updateSetting' && typeof data.key === 'string' && CONFIG_KEYS.has(data.key)) {
@@ -124,49 +268,31 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
     }
   }
 
-  private toEmbedUrl(value: string): string | undefined {
-    try {
-      const url = new URL(value.trim());
-      const host = url.hostname.toLowerCase();
-      if (host !== 'instagram.com' && host !== 'www.instagram.com') { return undefined; }
-      const match = url.pathname.match(/\/(?:reel|reels)\/([A-Za-z0-9_-]+)/i);
-      return match ? `https://www.instagram.com/reel/${match[1]}/embed/` : undefined;
-    } catch { return undefined; }
+  refresh(forceCodingSync = false): void {
+    const state = this.state();
+    if (forceCodingSync || state.codingActive !== this.lastCodingActive) {
+      this.lastCodingActive = state.codingActive;
+      this.bridge.syncCodingState();
+    }
+    void this.view?.webview.postMessage({ type: 'state', value: state });
+    this.onStateChanged(state);
   }
 
-  private state(): DoomScrollState {
-    const config = vscode.workspace.getConfiguration('doomScroll');
+  private state(): UiState {
+    const settings = readSettings();
     const secondsSinceCoding = this.tracker.secondsSinceActivity();
-    const autoScrollEnabled = config.get('autoScrollEnabled', true);
-    const smartModeEnabled = config.get('smartModeEnabled', true);
-    const onlyWhileCoding = config.get('onlyWhileCoding', true);
-    const inactivityTimeoutSeconds = config.get('inactivityTimeoutSeconds', 20);
-    const status = !autoScrollEnabled
-      ? 'PAUSED BY USER'
-      : onlyWhileCoding && secondsSinceCoding > inactivityTimeoutSeconds
-        ? 'PAUSED - NOT CODING'
-        : smartModeEnabled ? 'SMART' : 'AUTO';
-    const reels = this.context.globalState.get<string[]>('reels', []);
-    const storedIndex = this.context.globalState.get<number>('currentIndex', 0);
-    return {
-      autoScrollEnabled,
-      intervalSeconds: config.get('intervalSeconds', 10),
-      smartModeEnabled,
-      onlyWhileCoding,
-      inactivityTimeoutSeconds,
-      volume: config.get('volume', 35),
-      muted: config.get('muted', false),
-      phoneMode: config.get('phoneMode', true),
-      opacity: config.get('opacity', 1),
-      status,
-      secondsSinceCoding,
-      reels,
-      currentIndex: Math.max(0, Math.min(storedIndex, Math.max(0, reels.length - 1)))
-    };
-  }
-
-  postState(): void {
-    void this.view?.webview.postMessage({ type: 'state', value: this.state() });
+    const codingActive = !settings.onlyWhileCoding || secondsSinceCoding <= settings.inactivityTimeoutSeconds;
+    const connection = this.bridge.getState();
+    const status = !connection.serverReady
+      ? 'LOCAL SERVER ERROR'
+      : !connection.connected
+        ? 'CONNECT BROWSER'
+        : !settings.autoScrollEnabled
+          ? 'PAUSED BY USER'
+          : !codingActive
+            ? 'PAUSED - NOT CODING'
+            : settings.smartModeEnabled ? 'SMART ACTIVE' : 'AUTO ACTIVE';
+    return { ...settings, ...connection, codingActive, secondsSinceCoding, status };
   }
 
   private html(webview: vscode.Webview): string {
@@ -177,34 +303,43 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src ${webview.cspSource}; frame-src https://www.instagram.com https://instagram.com;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src ${webview.cspSource};">
   <link rel="stylesheet" href="${styleUri}">
   <title>DoomScroll Reels</title>
 </head>
 <body>
-  <header>
-    <strong>DoomScroll</strong>
-    <button id="play" title="Pausar o reanudar el controlador">⏸</button>
-    <select id="interval" title="Intervalo preferido"><option value="5">5s</option><option value="10">10s</option><option value="15">15s</option><option value="30">30s</option></select>
-    <button id="smart" title="Smart Mode">Smart</button>
-    <button id="mute" title="Mute">🔊</button>
-  </header>
+  <header><strong>DoomScroll</strong><span id="connection" class="badge">Cargando</span></header>
   <main id="content">
-    <div class="phone">
-      <form id="addForm"><input id="reelUrl" type="url" required placeholder="Pega un enlace instagram.com/reel/…" aria-label="Enlace del Reel"><button type="submit">Agregar</button></form>
-      <div id="empty" class="empty"><div class="reel-placeholder" aria-hidden="true"><span>▶</span></div><h2>Agrega tu primer Reel</h2><p>Copia el enlace de un Reel público y pégalo arriba. Los embeds oficiales sí pueden aparecer aquí.</p></div>
-      <iframe id="reelFrame" title="Instagram Reel" allow="autoplay; encrypted-media; picture-in-picture" loading="eager"></iframe>
-      <nav id="reelNav"><button id="previous" title="Reel anterior">←</button><span id="counter"></span><button id="next" title="Siguiente Reel">→</button><button id="remove" title="Quitar este Reel">✕</button></nav>
-      <button id="openReels" class="secondary">Buscar Reels en Instagram</button>
-      <p class="note">El feed completo no admite embed. Esta lista guarda hasta 30 enlaces públicos; no guarda credenciales.</p>
-    </div>
+    <section class="hero">
+      <div class="reel-card" aria-hidden="true"><span id="reelIcon">▶</span></div>
+      <h2 id="headline">Conecta tu navegador</h2>
+      <p id="detail">Carga el conector de Chrome o Edge una vez y abre Instagram Reels.</p>
+      <div class="primary-actions">
+        <button id="openReels" class="primary">Abrir Instagram Reels</button>
+        <button id="openConnector">Abrir carpeta del conector</button>
+      </div>
+    </section>
+    <section class="transport" aria-label="Controles de reproducción">
+      <button id="previous" title="Reel anterior">←</button>
+      <button id="play" class="round" title="Pausar o reanudar">⏸</button>
+      <button id="next" title="Siguiente Reel">→</button>
+      <button id="mute" title="Silenciar">🔊</button>
+      <button id="pip" title="Picture in Picture">▣</button>
+    </section>
     <section class="settings" aria-label="Preferencias">
-      <label><input id="onlyCoding" type="checkbox"> Solo mientras programo</label>
+      <label>Intervalo <select id="interval"><option value="5">5s</option><option value="10">10s</option><option value="15">15s</option><option value="30">30s</option></select></label>
+      <label><span>Smart Mode<small>Avanza al terminar el video</small></span><input id="smart" type="checkbox"></label>
+      <label><span>Solo mientras programo<small>Pausa tras 20 s sin escribir</small></span><input id="onlyCoding" type="checkbox"></label>
       <label>Volumen <input id="volume" type="range" min="0" max="100" step="1"><output id="volumeValue"></output></label>
       <label>Opacidad <select id="opacity"><option value="1">100%</option><option value="0.9">90%</option><option value="0.8">80%</option><option value="0.7">70%</option><option value="0.6">60%</option></select></label>
     </section>
+    <section class="setup" id="setup">
+      <h3>Configuración inicial</h3>
+      <ol><li>Abre la carpeta del conector.</li><li>Ve a <code>chrome://extensions</code> o <code>edge://extensions</code>.</li><li>Activa Modo desarrollador y elige <b>Cargar descomprimida</b>.</li><li>Selecciona esa carpeta y abre Reels.</li></ol>
+    </section>
+    <p id="error" class="error" hidden></p>
   </main>
-  <footer><span id="dot">●</span> <span id="status">CARGANDO</span></footer>
+  <footer><span id="dot">●</span> <span id="status">CARGANDO</span><span id="activity"></span></footer>
   <script src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -216,33 +351,58 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 }
 
+function readSettings(): ControllerSettings {
+  const config = vscode.workspace.getConfiguration('doomScroll');
+  return {
+    autoScrollEnabled: config.get('autoScrollEnabled', true),
+    intervalSeconds: config.get('intervalSeconds', 10),
+    smartModeEnabled: config.get('smartModeEnabled', true),
+    onlyWhileCoding: config.get('onlyWhileCoding', true),
+    inactivityTimeoutSeconds: config.get('inactivityTimeoutSeconds', 20),
+    volume: config.get('volume', 35),
+    muted: config.get('muted', false),
+    opacity: config.get('opacity', 1)
+  };
+}
+
+function booleanValue(value: unknown, fallback: boolean): boolean { return typeof value === 'boolean' ? value : fallback; }
+function numberValue(value: unknown, fallback: number): number { return typeof value === 'number' && Number.isFinite(value) ? value : fallback; }
+function stringValue(value: unknown, fallback?: string): string | undefined { return typeof value === 'string' ? value.slice(0, 500) : fallback; }
+
 export function activate(context: vscode.ExtensionContext): void {
   const tracker = new CodingActivityTracker();
-  const provider = new DoomScrollViewProvider(context, tracker);
+  const getCodingState = () => {
+    const settings = readSettings();
+    const secondsSinceActivity = tracker.secondsSinceActivity();
+    return { active: !settings.onlyWhileCoding || secondsSinceActivity <= settings.inactivityTimeoutSeconds, secondsSinceActivity };
+  };
+  const bridge = new BrowserBridge(readSettings, getCodingState);
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50);
   statusBar.name = 'DoomScroll';
-  statusBar.text = '$(play-circle) DoomScroll';
-  statusBar.tooltip = 'Open DoomScroll';
   statusBar.command = 'doomScroll.open';
   statusBar.show();
+  const provider = new DoomScrollViewProvider(context, tracker, bridge, state => {
+    statusBar.text = state.connected ? `$(radio-tower) DoomScroll: ${state.status}` : '$(plug) DoomScroll: Connect browser';
+    statusBar.tooltip = state.serverError ?? (state.connected ? 'Browser connector connected on localhost:8765' : 'Open DoomScroll to connect Chrome or Edge');
+  });
 
   context.subscriptions.push(
     tracker,
+    bridge,
     provider,
     statusBar,
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider, { webviewOptions: { retainContextWhenHidden: true } }),
-    vscode.commands.registerCommand('doomScroll.open', async () => {
-      await vscode.commands.executeCommand('workbench.view.extension.doomScroll');
-    }),
-    vscode.commands.registerCommand('doomScroll.openReels', async () => {
-      await vscode.env.openExternal(REELS_URL);
-    }),
+    vscode.commands.registerCommand('doomScroll.open', () => vscode.commands.executeCommand('workbench.view.extension.doomScroll')),
+    vscode.commands.registerCommand('doomScroll.openReels', () => vscode.env.openExternal(REELS_URL)),
+    vscode.commands.registerCommand('doomScroll.openConnectorFolder', () => vscode.commands.executeCommand('revealFileInOS', vscode.Uri.joinPath(context.extensionUri, 'browser-extension'))),
     vscode.commands.registerCommand('doomScroll.toggleAutoScroll', async () => {
       const config = vscode.workspace.getConfiguration('doomScroll');
       await config.update('autoScrollEnabled', !config.get('autoScrollEnabled', true), vscode.ConfigurationTarget.Global);
-      provider.postState();
-    })
+    }),
+    vscode.commands.registerCommand('doomScroll.nextReel', () => bridge.command('NEXT')),
+    vscode.commands.registerCommand('doomScroll.previousReel', () => bridge.command('PREVIOUS'))
   );
+  provider.refresh(true);
 }
 
 export function deactivate(): void { }

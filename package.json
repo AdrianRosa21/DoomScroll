@@ -1,8 +1,8 @@
 {
   "name": "doomscroll-vscode",
   "displayName": "DoomScroll Reels",
-  "description": "A compact Instagram Reels companion for Visual Studio Code.",
-  "version": "1.1.0",
+  "description": "Control Instagram Reels in Chrome or Edge from Visual Studio Code.",
+  "version": "2.0.0",
   "publisher": "doomscrollvs",
   "license": "MIT",
   "engines": {
@@ -14,14 +14,18 @@
     "onView:doomScroll.reelsView",
     "onCommand:doomScroll.open",
     "onCommand:doomScroll.openReels",
-    "onCommand:doomScroll.toggleAutoScroll"
+    "onCommand:doomScroll.toggleAutoScroll",
+    "onCommand:doomScroll.openConnectorFolder"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       { "command": "doomScroll.open", "title": "Open DoomScroll", "category": "DoomScroll" },
       { "command": "doomScroll.openReels", "title": "Open Instagram Reels", "category": "DoomScroll", "icon": "$(link-external)" },
-      { "command": "doomScroll.toggleAutoScroll", "title": "Toggle Auto Scroll", "category": "DoomScroll", "icon": "$(debug-pause)" }
+      { "command": "doomScroll.openConnectorFolder", "title": "Open Browser Connector Folder", "category": "DoomScroll", "icon": "$(folder-opened)" },
+      { "command": "doomScroll.toggleAutoScroll", "title": "Toggle Auto Scroll", "category": "DoomScroll", "icon": "$(debug-pause)" },
+      { "command": "doomScroll.nextReel", "title": "Next Reel", "category": "DoomScroll" },
+      { "command": "doomScroll.previousReel", "title": "Previous Reel", "category": "DoomScroll" }
     ],
     "keybindings": [
       { "command": "doomScroll.open", "key": "ctrl+alt+i", "mac": "cmd+alt+i" },
@@ -40,6 +44,7 @@
     "menus": {
       "view/title": [
         { "command": "doomScroll.openReels", "when": "view == doomScroll.reelsView", "group": "navigation" },
+        { "command": "doomScroll.openConnectorFolder", "when": "view == doomScroll.reelsView", "group": "navigation" },
         { "command": "doomScroll.toggleAutoScroll", "when": "view == doomScroll.reelsView", "group": "navigation" }
       ]
     },
@@ -53,13 +58,12 @@
         "doomScroll.inactivityTimeoutSeconds": { "type": "number", "default": 20, "minimum": 5, "maximum": 300, "description": "Seconds without document edits before entering IDLE." },
         "doomScroll.volume": { "type": "number", "default": 35, "minimum": 0, "maximum": 100, "description": "Preferred Instagram volume." },
         "doomScroll.muted": { "type": "boolean", "default": false, "description": "Preferred mute state." },
-        "doomScroll.phoneMode": { "type": "boolean", "default": true, "description": "Use the compact sidebar layout." },
         "doomScroll.opacity": { "type": "number", "enum": [1, 0.9, 0.8, 0.7, 0.6], "default": 1, "description": "Controller content opacity." }
       }
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ --noEmit && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
     "watch": "tsc -watch -p ./",
     "check": "tsc -p ./ --noEmit",
     "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository"
@@ -68,6 +72,11 @@
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.6.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.10",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
   }
 }
