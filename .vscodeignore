@@ -1,0 +1,12 @@
+.vscode/**
+.vs
+.vs/**
+.gitignore
+src/**
+tsconfig.json
+node_modules/**
+DoomScrollVS
+DoomScrollVS/**
+*.slnx
+*.vsix
+**/*.map
