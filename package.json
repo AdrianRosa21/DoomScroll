@@ -2,7 +2,7 @@
   "name": "doomscroll-vscode",
   "displayName": "DoomScroll Reels",
   "description": "Control Instagram Reels in Chrome or Edge from Visual Studio Code.",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "publisher": "doomscrollvs",
   "license": "MIT",
   "engines": {

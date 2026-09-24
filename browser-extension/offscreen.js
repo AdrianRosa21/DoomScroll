@@ -15,6 +15,8 @@ let context;
 let renderTimer;
 let crop;
 let captureActive = false;
+let previewBusy = false;
+let lastPreviewAt = 0;
 
 function connect() {
   clearTimeout(reconnectTimer);
@@ -71,11 +73,9 @@ async function startCapture(streamId) {
   renderFrame();
   renderTimer = setInterval(renderFrame, 1000 / 30);
 
-  const canvasStream = canvas.captureStream(24);
-  outputStream = new MediaStream([
-    ...canvasStream.getVideoTracks(),
-    ...sourceStream.getAudioTracks()
-  ]);
+  // Record Chrome's native tab stream. The canvas is kept only for the
+  // cropped JPEG fallback shown when a VS Code Webview cannot decode WebM.
+  outputStream = sourceStream;
   captureActive = true;
   connect();
   sourceStream.getTracks().forEach(track => track.addEventListener('ended', stopCapture, { once: true }));
@@ -107,6 +107,26 @@ function renderFrame() {
     context.fillStyle = '#000';
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(sourceVideo, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    if (!previewBusy && Date.now() - lastPreviewAt >= 100 && socket?.readyState === WebSocket.OPEN) {
+      previewBusy = true;
+      lastPreviewAt = Date.now();
+      try {
+        canvas.toBlob(async blob => {
+          try {
+            if (!blob || socket?.readyState !== WebSocket.OPEN) return;
+            const jpeg = new Uint8Array(await blob.arrayBuffer());
+            const packet = new Uint8Array(jpeg.byteLength + 1);
+            packet[0] = 0x4a;
+            packet.set(jpeg, 1);
+            socket.send(packet.buffer);
+          } finally {
+            previewBusy = false;
+          }
+        }, 'image/jpeg', 0.72);
+      } catch {
+        previewBusy = false;
+      }
+    }
   }
 }
 
@@ -123,7 +143,11 @@ function restartRecorder() {
   socket.send(JSON.stringify({ type: 'STREAM_RESET', mimeType: nextRecorder.mimeType || mimeType || 'video/webm' }));
   nextRecorder.addEventListener('dataavailable', async event => {
     if (recorder !== nextRecorder || event.data.size === 0 || socket?.readyState !== WebSocket.OPEN) return;
-    socket.send(await event.data.arrayBuffer());
+    const media = new Uint8Array(await event.data.arrayBuffer());
+    const packet = new Uint8Array(media.byteLength + 1);
+    packet[0] = 0x57;
+    packet.set(media, 1);
+    socket.send(packet.buffer);
   });
   nextRecorder.start(250);
 }
@@ -147,6 +171,7 @@ function stopCapture() {
   canvas = undefined;
   context = undefined;
   renderTimer = undefined;
+  previewBusy = false;
   socket?.close(1000, 'Capture stopped');
   socket = undefined;
 }

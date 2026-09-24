@@ -2,7 +2,7 @@ const vscode = acquireVsCodeApi();
 const $ = id => document.getElementById(id);
 const elements = {
   connection: $('connection'), content: $('content'), headline: $('headline'), detail: $('detail'),
-  reelIcon: $('reelIcon'), streamVideo: $('streamVideo'), streamPlaceholder: $('streamPlaceholder'),
+  reelIcon: $('reelIcon'), streamVideo: $('streamVideo'), streamFrame: $('streamFrame'), streamPlaceholder: $('streamPlaceholder'),
   streamHint: $('streamHint'), openReels: $('openReels'), openConnector: $('openConnector'),
   previous: $('previous'), play: $('play'), next: $('next'), mute: $('mute'), pip: $('pip'),
   interval: $('interval'), smart: $('smart'), onlyCoding: $('onlyCoding'), volume: $('volume'),
@@ -17,6 +17,7 @@ let sourceBuffer;
 let mediaObjectUrl;
 let mediaQueue = [];
 let pendingMimeType = 'video/webm;codecs="vp8,opus"';
+let frameObjectUrl;
 
 const update = (key, value) => vscode.postMessage({ type: 'updateSetting', key, value });
 const command = (name, value) => vscode.postMessage({ type: 'command', name, value });
@@ -63,6 +64,7 @@ window.addEventListener('message', event => {
   document.querySelectorAll('.transport button').forEach(button => { button.disabled = !state.connected; });
   elements.streamVideo.hidden = !state.mediaReceiving;
   elements.streamPlaceholder.hidden = state.mediaReceiving;
+  if (!state.mediaReceiving) elements.streamFrame.hidden = true;
 
   if (connectorOutdated) {
     elements.headline.textContent = 'Actualiza el conector de Chrome';
@@ -116,13 +118,27 @@ function connectMediaStream() {
       } catch { /* Ignore malformed stream control messages. */ }
       return;
     }
-    mediaQueue.push(event.data);
+    const packet = new Uint8Array(event.data);
+    if (packet[0] === 0x4a) {
+      showJpegFrame(event.data.slice(1));
+      return;
+    }
+    mediaQueue.push(packet[0] === 0x57 ? event.data.slice(1) : event.data);
     pumpMediaQueue();
   });
   mediaSocket.addEventListener('close', () => {
     mediaReconnectTimer = setTimeout(connectMediaStream, 1500);
   });
   mediaSocket.addEventListener('error', () => undefined);
+}
+
+function showJpegFrame(buffer) {
+  const nextUrl = URL.createObjectURL(new Blob([buffer], { type: 'image/jpeg' }));
+  const previousUrl = frameObjectUrl;
+  frameObjectUrl = nextUrl;
+  elements.streamFrame.src = nextUrl;
+  elements.streamFrame.hidden = false;
+  if (previousUrl) setTimeout(() => URL.revokeObjectURL(previousUrl), 1000);
 }
 
 function resetMediaSource(mimeType) {

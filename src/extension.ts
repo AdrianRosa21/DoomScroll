@@ -5,7 +5,7 @@ const REELS_URL = vscode.Uri.parse('https://www.instagram.com/reels/');
 const VIEW_ID = 'doomScroll.reelsView';
 const PORT = 8765;
 const PROTOCOL_VERSION = 1;
-const EXPECTED_CONNECTOR_VERSION = '2.1.3';
+const EXPECTED_CONNECTOR_VERSION = '2.1.4';
 const MAX_MESSAGE_BYTES = 32 * 1024;
 const MAX_MEDIA_CHUNK_BYTES = 4 * 1024 * 1024;
 const CONFIG_KEYS = new Set([
@@ -378,7 +378,7 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ws://127.0.0.1:${PORT}; media-src blob:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ws://127.0.0.1:${PORT}; media-src blob:; img-src blob:;">
   <link rel="stylesheet" href="${styleUri}">
   <title>DoomScroll Reels</title>
 </head>
@@ -388,6 +388,7 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
     <section class="hero">
       <div class="reel-card" id="playerShell">
         <video id="streamVideo" autoplay muted playsinline></video>
+        <img id="streamFrame" alt="Transmisión del Reel" hidden>
         <div id="streamPlaceholder" class="stream-placeholder"><span id="reelIcon">▶</span><small id="streamHint">Pulsa el icono del conector en Chrome para transmitir</small></div>
       </div>
       <h2 id="headline">Conecta tu navegador</h2>
