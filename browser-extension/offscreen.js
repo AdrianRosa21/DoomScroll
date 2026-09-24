@@ -12,7 +12,7 @@ let recorder;
 let sourceVideo;
 let canvas;
 let context;
-let animationFrame;
+let renderTimer;
 let crop;
 let captureActive = false;
 
@@ -59,6 +59,9 @@ async function startCapture(streamId) {
   sourceVideo.srcObject = sourceStream;
   sourceVideo.muted = true;
   sourceVideo.playsInline = true;
+  if (sourceVideo.readyState < HTMLMediaElement.HAVE_METADATA) {
+    await new Promise(resolve => sourceVideo.addEventListener('loadedmetadata', resolve, { once: true }));
+  }
   await sourceVideo.play();
 
   canvas = document.createElement('canvas');
@@ -66,6 +69,7 @@ async function startCapture(streamId) {
   canvas.height = 960;
   context = canvas.getContext('2d', { alpha: false, desynchronized: true });
   renderFrame();
+  renderTimer = setInterval(renderFrame, 1000 / 30);
 
   const canvasStream = canvas.captureStream(24);
   outputStream = new MediaStream([
@@ -104,7 +108,6 @@ function renderFrame() {
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(sourceVideo, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   }
-  animationFrame = requestAnimationFrame(renderFrame);
 }
 
 function restartRecorder() {
@@ -135,7 +138,7 @@ function stopCapture() {
   captureActive = false;
   clearTimeout(reconnectTimer);
   stopRecorder();
-  if (animationFrame) cancelAnimationFrame(animationFrame);
+  if (renderTimer) clearInterval(renderTimer);
   sourceStream?.getTracks().forEach(track => track.stop());
   outputStream?.getTracks().forEach(track => track.stop());
   sourceStream = undefined;
@@ -143,6 +146,7 @@ function stopCapture() {
   sourceVideo = undefined;
   canvas = undefined;
   context = undefined;
+  renderTimer = undefined;
   socket?.close(1000, 'Capture stopped');
   socket = undefined;
 }

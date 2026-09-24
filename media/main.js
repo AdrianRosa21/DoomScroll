@@ -61,15 +61,20 @@ window.addEventListener('message', event => {
   elements.error.hidden = !(state.serverError || browser.error || versionError);
   elements.error.textContent = state.serverError || browser.error || versionError;
   document.querySelectorAll('.transport button').forEach(button => { button.disabled = !state.connected; });
-  elements.streamVideo.hidden = !state.mediaStreaming;
-  elements.streamPlaceholder.hidden = state.mediaStreaming;
+  elements.streamVideo.hidden = !state.mediaReceiving;
+  elements.streamPlaceholder.hidden = state.mediaReceiving;
 
   if (connectorOutdated) {
     elements.headline.textContent = 'Actualiza el conector de Chrome';
     elements.detail.textContent = `Chrome usa ${browser.connectorVersion}; la transmisión necesita ${state.expectedConnectorVersion}.`;
     elements.reelIcon.textContent = '!';
     elements.streamHint.textContent = 'Elimina el conector viejo, carga la carpeta nueva y recarga Instagram';
-  } else if (state.mediaStreaming) {
+  } else if (state.mediaStreaming && !state.mediaReceiving) {
+    elements.headline.textContent = 'Preparando la transmisión';
+    elements.detail.textContent = 'Chrome está conectado; esperando los primeros cuadros del Reel.';
+    elements.reelIcon.textContent = '…';
+    elements.streamHint.textContent = 'La captura puede tardar un momento al iniciar';
+  } else if (state.mediaReceiving) {
     elements.headline.textContent = 'Transmitiendo dentro de VS Code';
     const duration = browser.duration > 0 ? ` · ${Math.round(browser.currentTime)}s / ${Math.round(browser.duration)}s` : '';
     elements.detail.textContent = `${state.status}${duration}`;

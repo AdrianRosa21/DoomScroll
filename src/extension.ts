@@ -5,7 +5,7 @@ const REELS_URL = vscode.Uri.parse('https://www.instagram.com/reels/');
 const VIEW_ID = 'doomScroll.reelsView';
 const PORT = 8765;
 const PROTOCOL_VERSION = 1;
-const EXPECTED_CONNECTOR_VERSION = '2.1.2';
+const EXPECTED_CONNECTOR_VERSION = '2.1.3';
 const MAX_MESSAGE_BYTES = 32 * 1024;
 const MAX_MEDIA_CHUNK_BYTES = 4 * 1024 * 1024;
 const CONFIG_KEYS = new Set([
@@ -46,6 +46,7 @@ interface UiState extends ControllerSettings {
   secondsSinceCoding: number;
   status: string;
   mediaStreaming: boolean;
+  mediaReceiving: boolean;
   expectedConnectorVersion: string;
   browser: BrowserState;
 }
@@ -81,6 +82,7 @@ class BrowserBridge implements vscode.Disposable {
   private client?: WebSocket;
   private mediaProducer?: WebSocket;
   private readonly mediaConsumers = new Set<WebSocket>();
+  private lastMediaChunkAt = 0;
   private serverReady = false;
   private serverError?: string;
   private browser: BrowserState = {
@@ -151,15 +153,19 @@ class BrowserBridge implements vscode.Disposable {
         }
         return;
       }
+      const wasReceiving = Date.now() - this.lastMediaChunkAt < 3000;
+      this.lastMediaChunkAt = Date.now();
       for (const consumer of this.mediaConsumers) {
         if (consumer.readyState === WebSocket.OPEN && consumer.bufferedAmount < MAX_MEDIA_CHUNK_BYTES * 2) {
           consumer.send(data, { binary: true });
         }
       }
+      if (!wasReceiving) { this.emitter.fire(); }
     });
     socket.on('close', () => {
       if (this.mediaProducer === socket) {
         this.mediaProducer = undefined;
+        this.lastMediaChunkAt = 0;
         this.emitter.fire();
       }
     });
@@ -239,12 +245,13 @@ class BrowserBridge implements vscode.Disposable {
     }
   }
 
-  getState(): { connected: boolean; serverReady: boolean; serverError?: string; mediaStreaming: boolean; browser: BrowserState } {
+  getState(): { connected: boolean; serverReady: boolean; serverError?: string; mediaStreaming: boolean; mediaReceiving: boolean; browser: BrowserState } {
     return {
       connected: this.client?.readyState === WebSocket.OPEN,
       serverReady: this.serverReady,
       serverError: this.serverError,
       mediaStreaming: this.mediaProducer?.readyState === WebSocket.OPEN,
+      mediaReceiving: Date.now() - this.lastMediaChunkAt < 3000,
       browser: { ...this.browser }
     };
   }
