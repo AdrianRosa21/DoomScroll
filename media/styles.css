@@ -6,8 +6,12 @@ header { position: sticky; top: 0; z-index: 2; display: flex; align-items: cente
 .badge.connected { color: var(--vscode-testing-iconPassed); }
 main { max-width: 420px; margin: 0 auto; padding: 12px; transition: opacity .15s ease; }
 .hero { text-align: center; }
-.reel-card { display: grid; place-items: center; width: min(100%, 245px); aspect-ratio: 9/13; margin: 3px auto 14px; border: 1px solid var(--vscode-panel-border); border-radius: 18px; background: radial-gradient(circle at 25% 10%, #73399a, #2a193a 34%, #111 68%, #461d25); box-shadow: 0 8px 28px rgba(0,0,0,.22); }
-.reel-card span { display: grid; place-items: center; width: 62px; height: 62px; border-radius: 50%; color: white; background: rgba(255,255,255,.17); font-size: 28px; }
+.reel-card { position: relative; display: grid; place-items: center; width: min(100%, 245px); aspect-ratio: 9/16; margin: 3px auto 14px; overflow: hidden; border: 1px solid var(--vscode-panel-border); border-radius: 18px; background: radial-gradient(circle at 25% 10%, #73399a, #2a193a 34%, #111 68%, #461d25); box-shadow: 0 8px 28px rgba(0,0,0,.22); }
+.stream-placeholder { display: grid; place-items: center; gap: 12px; padding: 18px; }
+.stream-placeholder[hidden], #streamVideo[hidden] { display: none; }
+.stream-placeholder span { display: grid; place-items: center; width: 62px; height: 62px; border-radius: 50%; color: white; background: rgba(255,255,255,.17); font-size: 28px; }
+.stream-placeholder small { max-width: 180px; color: rgba(255,255,255,.78); line-height: 1.4; }
+#streamVideo { width: 100%; height: 100%; object-fit: cover; background: #000; }
 h2 { margin: 7px 0; font-size: 16px; }
 h3 { margin: 0 0 8px; font-size: 13px; }
 p { line-height: 1.45; color: var(--vscode-descriptionForeground); }

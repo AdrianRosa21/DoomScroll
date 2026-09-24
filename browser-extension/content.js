@@ -87,7 +87,25 @@
       return labels.some(value => label.includes(value)) && rect.width > 0 && rect.height > 0;
     });
     if (button) button.click();
-    else window.scrollBy({ top: direction * Math.max(500, innerHeight * 0.88), behavior: 'smooth' });
+    else {
+      const geometricButton = findGeometricNavigationButton(direction);
+      if (geometricButton) geometricButton.click();
+      else {
+        window.dispatchEvent(new WheelEvent('wheel', { deltaY: direction * innerHeight, bubbles: true, cancelable: true }));
+        window.scrollBy({ top: direction * Math.max(500, innerHeight * 0.88), behavior: 'smooth' });
+      }
+    }
+  }
+
+  function findGeometricNavigationButton(direction) {
+    const candidates = [...document.querySelectorAll('button')]
+      .map(button => ({ button, rect: button.getBoundingClientRect() }))
+      .filter(item => item.rect.width >= 36 && item.rect.width <= 120 && item.rect.height >= 36 && item.rect.height <= 120)
+      .filter(item => item.rect.left > innerWidth * 0.82 && item.rect.top > innerHeight * 0.2 && item.rect.bottom < innerHeight * 0.9)
+      .filter(item => getComputedStyle(item.button).visibility !== 'hidden');
+    if (candidates.length < 2) return undefined;
+    candidates.sort((a, b) => a.rect.top - b.rect.top);
+    return direction > 0 ? candidates.at(-1)?.button : candidates[0]?.button;
   }
 
   async function pictureInPicture() {
@@ -107,6 +125,7 @@
 
   function reportState(force = false) {
     const video = activeVideo || visibleVideo();
+    const rect = video?.getBoundingClientRect();
     const state = {
       type: 'REEL_STATE',
       pageReady: true,
@@ -117,7 +136,15 @@
       duration: Number.isFinite(video?.duration) ? video.duration : 0,
       muted: video?.muted ?? Boolean(settings.muted),
       volume: Math.round((video?.volume ?? Number(settings.volume) / 100) * 100),
-      status: !bridgeConnected ? 'VS Code disconnected' : !canAdvance() ? 'Automation paused' : 'Ready'
+      status: !bridgeConnected ? 'VS Code disconnected' : !canAdvance() ? 'Automation paused' : 'Ready',
+      crop: rect ? {
+        x: Math.max(0, rect.left),
+        y: Math.max(0, rect.top),
+        width: Math.min(innerWidth - Math.max(0, rect.left), rect.width),
+        height: Math.min(innerHeight - Math.max(0, rect.top), rect.height),
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight
+      } : undefined
     };
     const signature = JSON.stringify({ ...state, currentTime: Math.floor(state.currentTime) });
     if (force || (signature !== lastStateSignature && Date.now() - lastStateSentAt >= 700)) {

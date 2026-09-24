@@ -2,13 +2,21 @@ const vscode = acquireVsCodeApi();
 const $ = id => document.getElementById(id);
 const elements = {
   connection: $('connection'), content: $('content'), headline: $('headline'), detail: $('detail'),
-  reelIcon: $('reelIcon'), openReels: $('openReels'), openConnector: $('openConnector'),
+  reelIcon: $('reelIcon'), streamVideo: $('streamVideo'), streamPlaceholder: $('streamPlaceholder'),
+  streamHint: $('streamHint'), openReels: $('openReels'), openConnector: $('openConnector'),
   previous: $('previous'), play: $('play'), next: $('next'), mute: $('mute'), pip: $('pip'),
   interval: $('interval'), smart: $('smart'), onlyCoding: $('onlyCoding'), volume: $('volume'),
   volumeValue: $('volumeValue'), opacity: $('opacity'), setup: $('setup'), error: $('error'),
   dot: $('dot'), status: $('status'), activity: $('activity')
 };
 let state;
+let mediaSocket;
+let mediaReconnectTimer;
+let mediaSource;
+let sourceBuffer;
+let mediaObjectUrl;
+let mediaQueue = [];
+let pendingMimeType = 'video/webm;codecs="vp8,opus"';
 
 const update = (key, value) => vscode.postMessage({ type: 'updateSetting', key, value });
 const command = (name, value) => vscode.postMessage({ type: 'command', name, value });
@@ -41,6 +49,7 @@ window.addEventListener('message', event => {
   elements.volumeValue.value = `${state.volume}%`;
   elements.opacity.value = String(state.opacity);
   elements.content.style.opacity = String(state.opacity);
+  elements.streamVideo.muted = state.muted;
   elements.setup.hidden = state.connected;
   elements.status.textContent = state.status;
   elements.activity.textContent = state.onlyWhileCoding ? ` · ${state.secondsSinceCoding}s` : '';
@@ -48,23 +57,100 @@ window.addEventListener('message', event => {
   elements.error.hidden = !(state.serverError || browser.error);
   elements.error.textContent = state.serverError || browser.error || '';
   document.querySelectorAll('.transport button').forEach(button => { button.disabled = !state.connected; });
+  elements.streamVideo.hidden = !state.mediaStreaming;
+  elements.streamPlaceholder.hidden = state.mediaStreaming;
 
-  if (!state.connected) {
+  if (state.mediaStreaming) {
+    elements.headline.textContent = 'Transmitiendo dentro de VS Code';
+    const duration = browser.duration > 0 ? ` · ${Math.round(browser.currentTime)}s / ${Math.round(browser.duration)}s` : '';
+    elements.detail.textContent = `${state.status}${duration}`;
+    elements.streamVideo.play().catch(() => undefined);
+  } else if (!state.connected) {
     elements.headline.textContent = 'Conecta Chrome o Edge';
     elements.detail.textContent = 'Carga el conector local una vez. DoomScroll nunca recibe tu contraseña ni tus cookies.';
     elements.reelIcon.textContent = '↔';
+    elements.streamHint.textContent = 'Primero conecta la extensión del navegador';
   } else if (!browser.pageReady) {
     elements.headline.textContent = 'Abre Instagram Reels';
     elements.detail.textContent = 'El conector está listo, pero no encuentra una pestaña de Reels abierta.';
     elements.reelIcon.textContent = '◎';
+    elements.streamHint.textContent = 'Abre Instagram Reels en Chrome o Edge';
   } else if (!browser.hasVideo) {
     elements.headline.textContent = 'Buscando el Reel';
     elements.detail.textContent = browser.status || 'Instagram está cargando el video activo.';
     elements.reelIcon.textContent = '…';
+    elements.streamHint.textContent = 'Esperando el video visible';
   } else {
     elements.headline.textContent = browser.playing ? 'Reel reproduciéndose' : 'Reel en pausa';
     const duration = browser.duration > 0 ? ` · ${Math.round(browser.currentTime)}s / ${Math.round(browser.duration)}s` : '';
     elements.detail.textContent = `${state.status}${duration}`;
     elements.reelIcon.textContent = browser.playing ? '▶' : 'Ⅱ';
+    elements.streamHint.textContent = 'Pulsa el icono de DoomScroll en Chrome para transmitir aquí';
   }
 });
+
+function connectMediaStream() {
+  clearTimeout(mediaReconnectTimer);
+  if (mediaSocket && (mediaSocket.readyState === WebSocket.OPEN || mediaSocket.readyState === WebSocket.CONNECTING)) return;
+  mediaSocket = new WebSocket('ws://127.0.0.1:8765/media-consumer');
+  mediaSocket.binaryType = 'arraybuffer';
+  mediaSocket.addEventListener('message', event => {
+    if (typeof event.data === 'string') {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === 'STREAM_RESET') resetMediaSource(message.mimeType);
+      } catch { /* Ignore malformed stream control messages. */ }
+      return;
+    }
+    mediaQueue.push(event.data);
+    pumpMediaQueue();
+  });
+  mediaSocket.addEventListener('close', () => {
+    mediaReconnectTimer = setTimeout(connectMediaStream, 1500);
+  });
+  mediaSocket.addEventListener('error', () => undefined);
+}
+
+function resetMediaSource(mimeType) {
+  pendingMimeType = MediaSource.isTypeSupported(mimeType) ? mimeType : 'video/webm;codecs="vp8,opus"';
+  mediaQueue = [];
+  sourceBuffer = undefined;
+  if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
+  mediaSource = new MediaSource();
+  mediaObjectUrl = URL.createObjectURL(mediaSource);
+  elements.streamVideo.src = mediaObjectUrl;
+  mediaSource.addEventListener('sourceopen', () => {
+    try {
+      const supportedType = MediaSource.isTypeSupported(pendingMimeType) ? pendingMimeType : 'video/webm';
+      sourceBuffer = mediaSource.addSourceBuffer(supportedType);
+      sourceBuffer.mode = 'sequence';
+      sourceBuffer.addEventListener('updateend', () => {
+        keepPlaybackLive();
+        pumpMediaQueue();
+      });
+      pumpMediaQueue();
+    } catch (error) {
+      elements.error.hidden = false;
+      elements.error.textContent = `No se pudo reproducir la transmisión: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }, { once: true });
+}
+
+function pumpMediaQueue() {
+  if (!sourceBuffer || sourceBuffer.updating || mediaQueue.length === 0 || mediaSource?.readyState !== 'open') return;
+  try {
+    sourceBuffer.appendBuffer(mediaQueue.shift());
+  } catch {
+    mediaQueue = [];
+  }
+}
+
+function keepPlaybackLive() {
+  const video = elements.streamVideo;
+  if (!video.buffered.length) return;
+  const liveEdge = video.buffered.end(video.buffered.length - 1);
+  if (!Number.isFinite(video.currentTime) || liveEdge - video.currentTime > 1.5) video.currentTime = Math.max(0, liveEdge - 0.25);
+  video.play().catch(() => undefined);
+}
+
+connectMediaStream();

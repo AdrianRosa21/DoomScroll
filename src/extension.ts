@@ -6,6 +6,7 @@ const VIEW_ID = 'doomScroll.reelsView';
 const PORT = 8765;
 const PROTOCOL_VERSION = 1;
 const MAX_MESSAGE_BYTES = 32 * 1024;
+const MAX_MEDIA_CHUNK_BYTES = 4 * 1024 * 1024;
 const CONFIG_KEYS = new Set([
   'autoScrollEnabled', 'intervalSeconds', 'smartModeEnabled', 'onlyWhileCoding',
   'inactivityTimeoutSeconds', 'volume', 'muted', 'opacity'
@@ -42,6 +43,7 @@ interface UiState extends ControllerSettings {
   codingActive: boolean;
   secondsSinceCoding: number;
   status: string;
+  mediaStreaming: boolean;
   browser: BrowserState;
 }
 
@@ -74,6 +76,8 @@ class CodingActivityTracker implements vscode.Disposable {
 class BrowserBridge implements vscode.Disposable {
   private server?: WebSocketServer;
   private client?: WebSocket;
+  private mediaProducer?: WebSocket;
+  private readonly mediaConsumers = new Set<WebSocket>();
   private serverReady = false;
   private serverError?: string;
   private browser: BrowserState = {
@@ -97,14 +101,14 @@ class BrowserBridge implements vscode.Disposable {
 
   private start(): void {
     try {
-      const server = new WebSocketServer({ host: '127.0.0.1', port: PORT, maxPayload: MAX_MESSAGE_BYTES });
+      const server = new WebSocketServer({ host: '127.0.0.1', port: PORT, maxPayload: MAX_MEDIA_CHUNK_BYTES });
       this.server = server;
       server.on('listening', () => {
         this.serverReady = true;
         this.serverError = undefined;
         this.emitter.fire();
       });
-      server.on('connection', socket => this.accept(socket));
+      server.on('connection', (socket, request) => this.route(socket, request.url));
       server.on('error', error => {
         this.serverReady = false;
         this.serverError = error.message;
@@ -113,6 +117,62 @@ class BrowserBridge implements vscode.Disposable {
     } catch (error) {
       this.serverError = error instanceof Error ? error.message : String(error);
       this.emitter.fire();
+    }
+  }
+
+  private route(socket: WebSocket, path?: string): void {
+    if (path?.startsWith('/media-producer')) {
+      this.acceptMediaProducer(socket);
+      return;
+    }
+    if (path?.startsWith('/media-consumer')) {
+      this.acceptMediaConsumer(socket);
+      return;
+    }
+    if (path?.startsWith('/control') || path === '/' || !path) {
+      this.accept(socket);
+      return;
+    }
+    socket.close(1008, 'Unknown DoomScroll channel');
+  }
+
+  private acceptMediaProducer(socket: WebSocket): void {
+    this.mediaProducer?.close(1000, 'Replaced by a newer capture');
+    this.mediaProducer = socket;
+    socket.on('message', (data, isBinary) => {
+      if (!isBinary) {
+        const text = data.toString();
+        if (text.length > 2048) { return; }
+        for (const consumer of this.mediaConsumers) {
+          if (consumer.readyState === WebSocket.OPEN) { consumer.send(text); }
+        }
+        return;
+      }
+      for (const consumer of this.mediaConsumers) {
+        if (consumer.readyState === WebSocket.OPEN && consumer.bufferedAmount < MAX_MEDIA_CHUNK_BYTES * 2) {
+          consumer.send(data, { binary: true });
+        }
+      }
+    });
+    socket.on('close', () => {
+      if (this.mediaProducer === socket) {
+        this.mediaProducer = undefined;
+        this.emitter.fire();
+      }
+    });
+    socket.on('error', () => undefined);
+    if (this.mediaConsumers.size > 0) {
+      socket.send(JSON.stringify({ type: 'CONSUMER_READY' }));
+    }
+    this.emitter.fire();
+  }
+
+  private acceptMediaConsumer(socket: WebSocket): void {
+    this.mediaConsumers.add(socket);
+    socket.on('close', () => this.mediaConsumers.delete(socket));
+    socket.on('error', () => undefined);
+    if (this.mediaProducer?.readyState === WebSocket.OPEN) {
+      this.mediaProducer.send(JSON.stringify({ type: 'CONSUMER_READY' }));
     }
   }
 
@@ -174,11 +234,12 @@ class BrowserBridge implements vscode.Disposable {
     }
   }
 
-  getState(): { connected: boolean; serverReady: boolean; serverError?: string; browser: BrowserState } {
+  getState(): { connected: boolean; serverReady: boolean; serverError?: string; mediaStreaming: boolean; browser: BrowserState } {
     return {
       connected: this.client?.readyState === WebSocket.OPEN,
       serverReady: this.serverReady,
       serverError: this.serverError,
+      mediaStreaming: this.mediaProducer?.readyState === WebSocket.OPEN,
       browser: { ...this.browser }
     };
   }
@@ -204,6 +265,8 @@ class BrowserBridge implements vscode.Disposable {
 
   dispose(): void {
     this.client?.close(1001, 'VS Code extension stopped');
+    this.mediaProducer?.close(1001, 'VS Code extension stopped');
+    for (const consumer of this.mediaConsumers) { consumer.close(1001, 'VS Code extension stopped'); }
     this.server?.close();
     this.emitter.dispose();
   }
@@ -303,7 +366,7 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src ${webview.cspSource}; connect-src ws://127.0.0.1:${PORT}; media-src blob:;">
   <link rel="stylesheet" href="${styleUri}">
   <title>DoomScroll Reels</title>
 </head>
@@ -311,7 +374,10 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
   <header><strong>DoomScroll</strong><span id="connection" class="badge">Cargando</span></header>
   <main id="content">
     <section class="hero">
-      <div class="reel-card" aria-hidden="true"><span id="reelIcon">▶</span></div>
+      <div class="reel-card" id="playerShell">
+        <video id="streamVideo" autoplay muted playsinline></video>
+        <div id="streamPlaceholder" class="stream-placeholder"><span id="reelIcon">▶</span><small id="streamHint">Pulsa el icono del conector en Chrome para transmitir</small></div>
+      </div>
       <h2 id="headline">Conecta tu navegador</h2>
       <p id="detail">Carga el conector de Chrome o Edge una vez y abre Instagram Reels.</p>
       <div class="primary-actions">

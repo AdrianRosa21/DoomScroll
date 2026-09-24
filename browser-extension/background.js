@@ -1,10 +1,11 @@
-const WS_URL = 'ws://127.0.0.1:8765';
+const WS_URL = 'ws://127.0.0.1:8765/control';
 const TAB_PATTERNS = ['https://www.instagram.com/reels/*', 'https://www.instagram.com/reel/*'];
 let socket;
 let reconnectTimer;
 let reconnectAttempt = 0;
 let heartbeatTimer;
 let connectionState = { connected: false, error: '', lastSeen: 0 };
+let capturedTabId;
 
 function setConnectionState(next) {
   connectionState = { ...connectionState, ...next };
@@ -63,9 +64,16 @@ async function relayToInstagram(payload) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return;
+  if (message.type === 'OFFSCREEN_ERROR') {
+    send({ type: 'ERROR', pageReady: true, message: message.message || 'Error de transmisión' });
+    return;
+  }
   if (message.channel === 'doomscroll-content' && message.payload && sender.tab) {
     send(message.payload);
     chrome.storage.local.set({ lastReelState: message.payload });
+    if (message.payload.crop) {
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'update-crop', data: message.payload.crop }).catch(() => undefined);
+    }
     return;
   }
   if (message.type === 'GET_STATUS') {
@@ -81,6 +89,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'POPUP_COMMAND') {
     relayToInstagram({ type: 'COMMAND', name: message.name, value: message.value });
     sendResponse({ ok: true });
+  }
+});
+
+async function ensureOffscreenDocument() {
+  const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+  if (contexts.length === 0) {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['USER_MEDIA'],
+      justification: 'Transmit the user-selected Instagram tab to the local Visual Studio Code extension.'
+    });
+  }
+}
+
+async function stopCapture() {
+  await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop-capture' }).catch(() => undefined);
+  capturedTabId = undefined;
+  await chrome.action.setBadgeText({ text: '' });
+  send({ type: 'PAGE_STATE', pageReady: true, status: 'Tab transmission stopped' });
+}
+
+chrome.action.onClicked.addListener(async tab => {
+  try {
+    if (!tab.id || !tab.url?.startsWith('https://www.instagram.com/')) {
+      await chrome.action.setBadgeText({ text: 'REEL' });
+      await chrome.action.setBadgeBackgroundColor({ color: '#c07b25' });
+      return;
+    }
+    const captures = await chrome.tabCapture.getCapturedTabs();
+    if (captures.some(capture => capture.tabId === tab.id && capture.status === 'active')) {
+      await stopCapture();
+      return;
+    }
+    await ensureOffscreenDocument();
+    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+    capturedTabId = tab.id;
+    await chrome.runtime.sendMessage({ target: 'offscreen', type: 'start-capture', data: streamId });
+    await chrome.action.setBadgeBackgroundColor({ color: '#2e9b55' });
+    await chrome.action.setBadgeText({ text: 'LIVE' });
+    send({ type: 'PAGE_STATE', pageReady: true, pageUrl: tab.url, status: 'Streaming tab to VS Code' });
+  } catch (error) {
+    capturedTabId = undefined;
+    await chrome.action.setBadgeBackgroundColor({ color: '#b33a3a' });
+    await chrome.action.setBadgeText({ text: 'ERR' });
+    send({ type: 'ERROR', pageReady: true, message: `No se pudo transmitir la pestaña: ${error instanceof Error ? error.message : String(error)}` });
+  }
+});
+
+chrome.tabCapture.onStatusChanged.addListener(info => {
+  if (info.tabId === capturedTabId && (info.status === 'stopped' || info.status === 'error')) {
+    capturedTabId = undefined;
+    chrome.action.setBadgeText({ text: '' });
   }
 });
 

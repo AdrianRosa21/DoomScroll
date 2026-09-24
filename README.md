@@ -22,7 +22,7 @@ VS Code extension                       Chrome / Edge extension
 
 ### 1. Visual Studio Code
 
-1. Descarga `doomscroll-vscode-2.0.0.vsix` desde Releases o créalo con `npm run package`.
+1. Descarga `doomscroll-vscode-2.1.0.vsix` desde Releases o créalo con `npm run package`.
 2. En VS Code abre **Extensions → ⋯ → Install from VSIX…**.
 3. Reinicia VS Code y abre DoomScroll desde la Activity Bar.
 
@@ -33,6 +33,7 @@ VS Code extension                       Chrome / Edge extension
 3. Activa **Modo desarrollador**.
 4. Pulsa **Cargar descomprimida** y selecciona la carpeta `browser-extension`.
 5. Abre `https://www.instagram.com/reels/` con tu sesión normal.
+6. Con la pestaña de Reels activa, pulsa una vez el icono de **DoomScroll Browser Connector** en Chrome/Edge. Verás la insignia `LIVE` y el Reel aparecerá dentro de VS Code. Otro clic detiene la transmisión.
 
 ## Funciones
 
@@ -41,6 +42,7 @@ VS Code extension                       Chrome / Edge extension
 - Smart Mode: avanza cuando termina el video y conserva el intervalo máximo configurado.
 - Modo **Solo mientras programo**: mantiene el auto-scroll mientras detecta cambios reales en archivos y lo pausa tras 20 segundos sin escribir.
 - Estado en vivo del conector, la pestaña y el Reel visible.
+- Transmisión recortada del Reel real, con audio, dentro de la barra lateral de VS Code.
 - Reconexión automática y latido para el service worker Manifest V3.
 
 ## Desarrollo
