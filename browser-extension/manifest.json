@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DoomScroll Browser Connector",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Connects Instagram Reels to the DoomScroll controller in Visual Studio Code.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "tabCapture", "offscreen"],

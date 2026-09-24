@@ -5,6 +5,7 @@ const REELS_URL = vscode.Uri.parse('https://www.instagram.com/reels/');
 const VIEW_ID = 'doomScroll.reelsView';
 const PORT = 8765;
 const PROTOCOL_VERSION = 1;
+const EXPECTED_CONNECTOR_VERSION = '2.1.2';
 const MAX_MESSAGE_BYTES = 32 * 1024;
 const MAX_MEDIA_CHUNK_BYTES = 4 * 1024 * 1024;
 const CONFIG_KEYS = new Set([
@@ -24,6 +25,7 @@ interface ControllerSettings {
 }
 
 interface BrowserState {
+  connectorVersion?: string;
   pageReady: boolean;
   pageUrl?: string;
   hasVideo: boolean;
@@ -44,6 +46,7 @@ interface UiState extends ControllerSettings {
   secondsSinceCoding: number;
   status: string;
   mediaStreaming: boolean;
+  expectedConnectorVersion: string;
   browser: BrowserState;
 }
 
@@ -214,7 +217,9 @@ class BrowserBridge implements vscode.Disposable {
       return;
     }
     if (message.type === 'HELLO') {
+      this.browser.connectorVersion = stringValue(message.browserVersion, this.browser.connectorVersion);
       this.syncAll();
+      this.emitter.fire();
       return;
     }
     if (message.type === 'PAGE_STATE' || message.type === 'REEL_STATE' || message.type === 'ERROR') {
@@ -355,7 +360,7 @@ class DoomScrollViewProvider implements vscode.WebviewViewProvider, vscode.Dispo
           : !codingActive
             ? 'PAUSED - NOT CODING'
             : settings.smartModeEnabled ? 'SMART ACTIVE' : 'AUTO ACTIVE';
-    return { ...settings, ...connection, codingActive, secondsSinceCoding, status };
+    return { ...settings, ...connection, expectedConnectorVersion: EXPECTED_CONNECTOR_VERSION, codingActive, secondsSinceCoding, status };
   }
 
   private html(webview: vscode.Webview): string {

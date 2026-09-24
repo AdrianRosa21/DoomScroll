@@ -38,6 +38,7 @@ window.addEventListener('message', event => {
   if (event.data?.type !== 'state') return;
   state = event.data.value;
   const browser = state.browser;
+  const connectorOutdated = Boolean(browser.connectorVersion && browser.connectorVersion !== state.expectedConnectorVersion);
   elements.connection.textContent = state.connected ? 'Navegador conectado' : 'Sin navegador';
   elements.connection.className = `badge ${state.connected ? 'connected' : ''}`;
   elements.play.textContent = state.autoScrollEnabled ? '⏸' : '▶';
@@ -54,13 +55,21 @@ window.addEventListener('message', event => {
   elements.status.textContent = state.status;
   elements.activity.textContent = state.onlyWhileCoding ? ` · ${state.secondsSinceCoding}s` : '';
   elements.dot.className = state.connected && state.autoScrollEnabled && state.codingActive ? 'active' : 'paused';
-  elements.error.hidden = !(state.serverError || browser.error);
-  elements.error.textContent = state.serverError || browser.error || '';
+  const versionError = connectorOutdated
+    ? `Conector del navegador ${browser.connectorVersion} desactualizado. Carga la carpeta ${state.expectedConnectorVersion} y recarga la pestaña de Instagram.`
+    : '';
+  elements.error.hidden = !(state.serverError || browser.error || versionError);
+  elements.error.textContent = state.serverError || browser.error || versionError;
   document.querySelectorAll('.transport button').forEach(button => { button.disabled = !state.connected; });
   elements.streamVideo.hidden = !state.mediaStreaming;
   elements.streamPlaceholder.hidden = state.mediaStreaming;
 
-  if (state.mediaStreaming) {
+  if (connectorOutdated) {
+    elements.headline.textContent = 'Actualiza el conector de Chrome';
+    elements.detail.textContent = `Chrome usa ${browser.connectorVersion}; la transmisión necesita ${state.expectedConnectorVersion}.`;
+    elements.reelIcon.textContent = '!';
+    elements.streamHint.textContent = 'Elimina el conector viejo, carga la carpeta nueva y recarga Instagram';
+  } else if (state.mediaStreaming) {
     elements.headline.textContent = 'Transmitiendo dentro de VS Code';
     const duration = browser.duration > 0 ? ` · ${Math.round(browser.currentTime)}s / ${Math.round(browser.duration)}s` : '';
     elements.detail.textContent = `${state.status}${duration}`;

@@ -20,7 +20,14 @@
   const watchedVideos = new WeakSet();
 
   function send(payload) {
-    chrome.runtime.sendMessage({ channel: 'doomscroll-content', payload }).catch(() => undefined);
+    try {
+      if (!chrome.runtime?.id) return;
+      const pending = chrome.runtime.sendMessage({ channel: 'doomscroll-content', payload });
+      if (pending && typeof pending.catch === 'function') pending.catch(() => undefined);
+    } catch {
+      // Chrome invalidates existing content scripts when an unpacked extension is reloaded.
+      // The refreshed Instagram tab receives the new script.
+    }
   }
 
   function visibleVideo() {
